@@ -1,7 +1,8 @@
 # Orange Line & Bluebikes live collectors
 
-Live-data component of the DATA 3125 individual project. Historical Bluebikes
-trip history, MBTA performance data, and NOAA weather are added separately.
+A standalone project for collecting live MBTA Orange Line arrivals and Bluebikes
+station availability. Collected data can be used by separate analysis projects
+in their own repositories.
 
 ## Collection
 
