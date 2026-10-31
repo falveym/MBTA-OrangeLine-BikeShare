@@ -52,12 +52,18 @@ Analyze copies or completed days: Excel can lock a live file on Windows.
 
 ## Windows build and run
 
-Install Java **17+** and Maven, with java and mvn on PATH:
+The launcher finds Java **17+** and Maven, including IntelliJ-managed installations,
+and builds the project before opening both collectors. You can also configure
+JAVA_HOME and put Maven on PATH.
 
 ```powershell
-mvn package
 .\run-collectors.bat
 ```
+
+Use `.\run-collectors.bat --build-only` to build and run offline checks without
+starting collection. The `arrivals` and `bikes` modes use the existing build
+without rebuilding, so scheduled tasks can supervise the Java process directly.
+CSV output goes into `data/raw/`.
 
 The package includes dependencies:
 `target/mbta-orangeline-bikeshare-1.0-SNAPSHOT-jar-with-dependencies.jar`.
