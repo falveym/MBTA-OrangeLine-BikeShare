@@ -1,26 +1,15 @@
 package edu.wit;
 
 import java.io.*;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
+import java.time.*;
 import java.util.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class BluebikesOrangeLineCapacity {
-
-    private static final String STATION_INFO_URL =
-            "https://gbfs.lyft.com/gbfs/1.1/bos/en/station_information.json";
-    private static final String STATION_STATUS_URL =
-            "https://gbfs.lyft.com/gbfs/1.1/bos/en/station_status.json";
-
-    // 4 hours, polling every 5 minutes → 48 iterations
-    private static final int NUM_ITERATIONS = 240;
-    private static final long POLL_INTERVAL_MS = 1L * 60L * 1000L; // 1 minute
-
+    static final String STATION_INFO_URL = "https://gbfs.lyft.com/gbfs/1.1/bos/en/station_information.json";
+    static final String STATION_STATUS_URL = "https://gbfs.lyft.com/gbfs/1.1/bos/en/station_status.json";
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final double RADIUS_METERS = 500.0;
 
     static class StationPoint {
@@ -52,136 +41,83 @@ public class BluebikesOrangeLineCapacity {
             new StationPoint("Sullivan", 42.3840, -71.0770)
     };
 
-    private static final DateTimeFormatter TS =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
-
-    public static void main(String[] args) {
-        try (PrintWriter csv = new PrintWriter(new FileWriter("bluebikes_orange_capacity.csv", true))) {
-
-            // CSV header (only if you want to avoid duplicates, you could check file size first)
-            csv.println("timestamp,iteration,south_bikes,south_capacity,north_bikes,north_capacity");
-
-            // ---- Load station info once ----
-            String stationInfoJson = fetchUrl(STATION_INFO_URL);
-            Map<String, double[]> stationCoords = parseStationCoordinates(stationInfoJson);
-            if (stationCoords.isEmpty()) {
-                System.err.println("Could not load station_information.json");
-                return;
+    record Station(String segment, int capacity) {}
+    static JsonNode stations(byte[] bytes) throws IOException {
+        JsonNode root = JSON.readTree(bytes);
+        if (root == null) throw new IOException("Empty JSON response");
+        JsonNode stations = root.path("data").path("stations");
+        if (!stations.isArray() || stations.isEmpty()) throw new IOException("Missing or empty station array");
+        return stations;
+    }
+    static Map<String, Station> loadStations(byte[] bytes) throws IOException {
+        Map<String, double[]> coords = new HashMap<>();
+        Map<String, Integer> capacities = new HashMap<>();
+        for (JsonNode st : stations(bytes)) {
+            if (!st.hasNonNull("station_id") || !st.path("lat").isNumber()
+                    || !st.path("lon").isNumber() || !st.path("capacity").isIntegralNumber()) {
+                throw new IOException("Invalid station information");
             }
-
-            // ---- Assign stations to segments once ----
-            Set<String> southIds = new HashSet<>();
-            Set<String> northIds = new HashSet<>();
-            assignStationsToSegments(stationCoords, southIds, northIds);
-
-            System.out.println("South segment station IDs: " + southIds);
-            System.out.println("North segment station IDs: " + northIds);
-
-            // ---- Poll station_status every 5 minutes ----
-            for (int i = 1; i <= NUM_ITERATIONS; i++) {
-                long start = System.currentTimeMillis();
-                String timestamp = TS.format(Instant.ofEpochMilli(start));
-
-                int southBikes = 0, southCapacity = 0;
-                int northBikes = 0, northCapacity = 0;
-
+            String id = st.get("station_id").asText();
+            coords.put(id, new double[]{st.get("lat").asDouble(), st.get("lon").asDouble()});
+            capacities.put(id, st.get("capacity").asInt());
+        }
+        Set<String> south = new TreeSet<>(), north = new TreeSet<>();
+        assignStationsToSegments(coords, south, north);
+        Map<String, Station> result = new TreeMap<>();
+        for (String id : south) result.put(id, new Station("south", capacities.get(id)));
+        for (String id : north) result.put(id, new Station("north", capacities.get(id)));
+        if (south.isEmpty() || north.isEmpty()) throw new IOException("A segment has no matching stations");
+        System.out.println("South station IDs: " + south + "; North station IDs: " + north);
+        return result;
+    }
+    static int collect(byte[] bytes, Map<String, Station> info, DailyCsv csv, Instant now) throws IOException {
+        // Validate the whole response before writing any rows.
+        List<Object[]> rows = new ArrayList<>();
+        Set<String> found = new HashSet<>();
+        for (JsonNode st : stations(bytes)) {
+            String id = st.path("station_id").asText();
+            Station station = info.get(id);
+            if (station == null) continue;
+            if (!st.path("num_bikes_available").isIntegralNumber()
+                    || !st.path("num_ebikes_available").isIntegralNumber()
+                    || !st.path("num_docks_available").isIntegralNumber()) throw new IOException("Missing counts for " + id);
+            int bikes = st.get("num_bikes_available").asInt(), ebikes = st.get("num_ebikes_available").asInt(),
+                    docks = st.get("num_docks_available").asInt();
+            if (bikes < 0 || ebikes < 0 || docks < 0) throw new IOException("Negative counts for " + id);
+            if (!found.add(id)) throw new IOException("Duplicate station " + id);
+            rows.add(new Object[]{ServiceWindow.timestamp(now), id, station.segment(), bikes, ebikes, docks, station.capacity()});
+        }
+        if (!found.containsAll(info.keySet())) throw new IOException("Status feed missing matched stations");
+        for (Object[] row : rows) csv.write(now, row);
+        return rows.size();
+    }
+    public static void main(String[] args) throws Exception {
+        Map<String, Station> info = Map.of();
+        LocalDate loaded = null;
+        try (DailyCsv csv = new DailyCsv("bikes", "timestamp,station_id,segment,bikes,ebikes,docks,capacity")) {
+            Runtime.getRuntime().addShutdownHook(new Thread(csv::close));
+            while (!Thread.currentThread().isInterrupted()) {
+                ServiceWindow.awaitOpen();
                 try {
-                    String statusJson = fetchUrl(STATION_STATUS_URL);
-                    JsonNode statusRoot = new ObjectMapper().readTree(statusJson);
-                    JsonNode stations = statusRoot.path("data").path("stations");
-
-                    for (JsonNode st : stations) {
-                        String id = st.path("station_id").asText();
-                        int bikes = st.path("num_bikes_available").asInt();
-                        int docks = st.path("num_docks_available").asInt();
-                        int capacity = bikes + docks;
-
-                        if (southIds.contains(id)) {
-                            southBikes += bikes;
-                            southCapacity += capacity;
-                        }
-                        if (northIds.contains(id)) {
-                            northBikes += bikes;
-                            northCapacity += capacity;
-                        }
+                    LocalDate today = Instant.now().atZone(ServiceWindow.ZONE).toLocalDate();
+                    if (!today.equals(loaded)) {
+                        info = loadStations(FeedClient.fetch(STATION_INFO_URL));
+                        loaded = today;
                     }
-                } catch (Exception e) {
-                    System.err.println("Error during iteration " + i + ": " + e.getMessage());
-                }
-
-                // ---- CSV row ----
-                csv.printf("%s,%d,%d,%d,%d,%d%n",
-                        timestamp, i,
-                        southBikes, southCapacity,
-                        northBikes, northCapacity
-                );
-                csv.flush();
-
-                // ---- Console summary ----
-                System.out.println("==============================================");
-                System.out.println("Iteration " + i + " @ " + timestamp);
-                System.out.println("SOUTH (Forest Hills → Ruggles)");
-                System.out.println("  Available Bikes: " + southBikes);
-                System.out.println("  Total Capacity:  " + southCapacity);
-                System.out.println("NORTH (Malden → Sullivan)");
-                System.out.println("  Available Bikes: " + northBikes);
-                System.out.println("  Total Capacity:  " + northCapacity);
-                System.out.println("==============================================");
-
-                if (i < NUM_ITERATIONS) {
-                    try {
-                        Thread.sleep(POLL_INTERVAL_MS);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
+                    // Do not record bike observations while the Orange Line feed has no trips.
+                    var feed = com.google.transit.realtime.GtfsRealtime.FeedMessage.parseFrom(FeedClient.fetch(SegmentHeadwayTracker.FEED_URL));
+                    boolean active = feed.getEntityList().stream().anyMatch(e -> e.hasVehicle()
+                            && e.getVehicle().hasTrip() && e.getVehicle().getTrip().getRouteId().equals("Orange"));
+                    if (active) {
+                        byte[] status = FeedClient.fetch(STATION_STATUS_URL);
+                        Instant now = Instant.now();
+                        if (ServiceWindow.isOpen(now)) System.out.println("Bike rows written: " + collect(status, info, csv, now));
+                    } else System.out.println("No Orange Line trips; skipping bike poll");
+                } catch (IOException e) { System.err.println("Bike poll failed; no synthetic zeros: " + e.getMessage()); }
+                Thread.sleep(300_000);
             }
-
-            System.out.println("Finished 4-hour Bluebikes capacity collection.");
-
-        } catch (IOException e) {
-            e.printStackTrace();
         }
     }
-
-    // -------- Helpers --------
-
-    private static String fetchUrl(String urlStr) throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-        conn.setRequestMethod("GET");
-        conn.setConnectTimeout(8000);
-        conn.setReadTimeout(8000);
-
-        if (conn.getResponseCode() != 200)
-            throw new IOException("HTTP " + conn.getResponseCode() + " for " + urlStr);
-
-        BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-        StringBuilder sb = new StringBuilder();
-        String line;
-        while ((line = br.readLine()) != null) sb.append(line);
-        conn.disconnect();
-        return sb.toString();
-    }
-
-    // station_id → [lat, lon]
-    private static Map<String, double[]> parseStationCoordinates(String json) {
-        Map<String, double[]> map = new HashMap<>();
-        try {
-            JsonNode root = new ObjectMapper().readTree(json);
-            JsonNode stations = root.path("data").path("stations");
-            for (JsonNode st : stations) {
-                String id = st.path("station_id").asText();
-                double lat = st.path("lat").asDouble();
-                double lon = st.path("lon").asDouble();
-                map.put(id, new double[]{lat, lon});
-            }
-        } catch (Exception e) {
-            System.err.println("Parse error: " + e.getMessage());
-        }
-        return map;
-    }
-
     private static void assignStationsToSegments(
             Map<String, double[]> coords,
             Set<String> south, Set<String> north
