@@ -45,6 +45,20 @@ This project tracks MBTA Orange Line transit headways and Bluebikes availability
 
 ## Setup & Usage
 
+### Windows PowerShell
+
+From this project folder, run:
+
+```powershell
+.\run-collectors.bat
+```
+
+The launcher finds Java and Maven (including IntelliJ-managed installations),
+builds the project, and opens one window per collector. CSV files are appended
+in the project folder. Close both collector windows to stop collection.
+Use `.\run-collectors.bat --build-only` to verify the build without collecting.
+The Maven build requires JDK 17 or newer.
+
 1. **Clone the repository**
 
 ```bash
