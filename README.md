@@ -18,7 +18,7 @@ The zone handles daylight saving time; timestamps include their UTC offset.
 
   Before 2026-11-08 the collector recorded only 70030 and 70010, so all Ruggles
   rows before that date are southbound and do not measure the south segment.
-  Backfill northbound Ruggles for those days from MBTA LAMP stop events.
+  Backfill northbound Ruggles for those days from MBTA LAMP (see LAMP backfill).
   Other platforms are not included. Direction is the feed's numeric direction_id
   (0 = southbound to Forest Hills, 1 = northbound to Oak Grove).
   Vehicle timestamps are used when available, otherwise the poll time. Observations
@@ -56,6 +56,40 @@ service day in memory and resets on restart; deduplicate (service day, trip_id,
 stop_id) in analysis as well. Before 04:45, the service day is the previous date.
 A crash or disk error can leave a partial final record; inspect before analysis.
 Analyze copies or completed days: Excel can lock a live file on Windows.
+
+## LAMP backfill
+
+`scripts/backfill_lamp.py` rebuilds Orange Line stop events from MBTA LAMP
+(`performancedata.mbta.com`, subway-on-time-performance-v1), which publishes every
+subway stop event one file per service day, after the day ends. It fills the
+Ruggles northbound (70011) gap before 2026-11-08 and also exports 70030 and 70010
+so LAMP can be checked against the collector.
+
+```bash
+pip install -r scripts/requirements-backfill.txt
+python scripts/backfill_lamp.py                                  # 2026-10-31 through yesterday
+python scripts/backfill_lamp.py --start 2026-11-08 --end 2026-11-08 --force
+```
+
+Output goes to `data/backfill/lamp_arrivals_YYYY-MM-DD.csv`, named by **service
+date**, so trips after midnight stay with the day they started (unlike the
+collector's calendar-day files). Existing files are skipped unless `--force`.
+Days LAMP has not yet published are listed so you can rerun later.
+
+| File | Columns |
+| --- | --- |
+| lamp_arrivals_YYYY-MM-DD.csv | timestamp,stop_id,trip_id,vehicle_id,direction,headway_trunk_seconds,dwell_time_seconds,service_date |
+
+The first five columns match the collector's arrivals schema. `timestamp` is
+LAMP's stop_timestamp (Eastern, with offset); events without one are skipped.
+`direction` is 0 southbound, 1 northbound. `headway_trunk_seconds` is LAMP's own
+headway and can be compared with headways computed from timestamps.
+
+For each day the script prints a check of 70030 and 70010 against `data/raw/`:
+matched trips and the median time difference. Large gaps or few matched trips
+mean the sources disagree; investigate before relying on the 70011 backfill.
+Keep backfilled and collected rows apart in analysis (or add a source column)
+so the switch from LAMP to the collector on 2026-11-08 stays visible.
 
 ## Windows build and run
 
