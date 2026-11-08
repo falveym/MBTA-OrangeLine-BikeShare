@@ -11,9 +11,16 @@ Both collectors run continuously during **04:45 through 01:30 America/New_York**
 The zone handles daylight saving time; timestamps include their UTC offset.
 
 * `SegmentHeadwayTracker` polls MBTA VehiclePositions every 30 seconds. It records
-  Orange Line vehicles observed STOPPED_AT Sullivan (70030) or Ruggles (70010),
-  once per (trip_id, stop_id). These are the plan's two directional platform IDs;
-  opposite platforms are not included. Direction is the feed's numeric direction_id.
+  Orange Line vehicles observed STOPPED_AT these platforms, once per (trip_id, stop_id):
+  * Sullivan southbound (70030), the end of the north segment (Malden → Sullivan).
+  * Ruggles northbound (70011), the end of the south segment (Forest Hills → Ruggles).
+  * Ruggles southbound (70010), kept for continuity; not a segment endpoint.
+
+  Before 2026-11-08 the collector recorded only 70030 and 70010, so all Ruggles
+  rows before that date are southbound and do not measure the south segment.
+  Backfill northbound Ruggles for those days from MBTA LAMP stop events.
+  Other platforms are not included. Direction is the feed's numeric direction_id
+  (0 = southbound to Forest Hills, 1 = northbound to Oak Grove).
   Vehicle timestamps are used when available, otherwise the poll time. Observations
   older than five minutes or over one minute in the future are discarded.
 * `BluebikesOrangeLineCapacity` polls station status every five minutes. It matches

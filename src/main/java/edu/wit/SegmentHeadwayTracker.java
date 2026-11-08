@@ -6,6 +6,10 @@ import java.util.*;
 
 public class SegmentHeadwayTracker {
     static final String FEED_URL = "https://cdn.mbta.com/realtime/VehiclePositions.pb";
+    // Segment endpoints: Sullivan southbound (70030) ends Malden -> Sullivan (north);
+    // Ruggles northbound (70011) ends Forest Hills -> Ruggles (south).
+    // Ruggles southbound (70010) is kept for continuity with data collected before 2026-11-08.
+    static final Set<String> STOP_IDS = Set.of("70030", "70011", "70010");
     private final Map<String, Instant> seen = new HashMap<>();
     private LocalDate serviceDate;
     int collect(GtfsRealtime.FeedMessage feed, DailyCsv csv, Instant now) throws IOException {
@@ -21,7 +25,7 @@ public class SegmentHeadwayTracker {
             if (!v.hasTrip() || !v.getTrip().getRouteId().equals("Orange")
                     || !v.getTrip().hasTripId() || !v.hasCurrentStatus()
                     || v.getCurrentStatus() != GtfsRealtime.VehiclePosition.VehicleStopStatus.STOPPED_AT
-                    || !Set.of("70030", "70010").contains(v.getStopId())) continue;
+                    || !STOP_IDS.contains(v.getStopId())) continue;
             String key = v.getTrip().getTripId() + ":" + v.getStopId();
             if (seen.containsKey(key)) continue;
             Instant observed = v.hasTimestamp() ? Instant.ofEpochSecond(v.getTimestamp()) : now;
