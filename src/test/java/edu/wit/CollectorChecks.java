@@ -60,7 +60,16 @@ public class CollectorChecks {
         try (DailyCsv csv = new DailyCsv(dir, "retry", "header")) {
             check(retry.collect(feed, csv, now) == 1);
         }
-        var info = Map.of("a", new BluebikesOrangeLineCapacity.Station("south", 10));
+        // Segment platforms: Ruggles northbound (70011) is recorded; Sullivan northbound (70031) is not.
+        for (var stop : Map.of("70011", 1, "70031", 0).entrySet()) {
+            var platformFeed = feed.toBuilder().setEntity(0, feed.getEntity(0).toBuilder().setVehicle(vehicle.toBuilder()
+                    .setStopId(stop.getKey()).setTrip(vehicle.getTrip().toBuilder().setDirectionId(1)))).build();
+            try (DailyCsv csv = new DailyCsv(dir, "platform-" + stop.getKey(), "header")) {
+                check(new SegmentHeadwayTracker().collect(platformFeed, csv, now) == stop.getValue());
+            }
+        }
+        check(Files.readAllLines(dir.resolve("platform-70011_2026-10-31.csv")).get(1).contains(",70011,trip,vehicle,1"));
+        var info = Map.of("a",new BluebikesOrangeLineCapacity.Station("south", 10));
         try (DailyCsv csv = new DailyCsv(dir, "bikes", "timestamp,station_id,segment,bikes,ebikes,docks,capacity")) {
             try {
                 BluebikesOrangeLineCapacity.collect("{\"data\":{\"stations\":[{\"station_id\":\"a\"}]}}".getBytes(StandardCharsets.UTF_8), info, csv, now);
